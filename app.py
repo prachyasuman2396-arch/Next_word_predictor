@@ -1,82 +1,121 @@
-import streamlit as st
+from flask import Flask, request, render_template_string
 import numpy as np
 import pickle
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 
 # --------------------------------------------------
-# Page configuration
+# App setup
 # --------------------------------------------------
-st.set_page_config(
-    page_title="Next Word Predictor",
-    page_icon="🔍"
-)
-
-st.title("🔍 Next Word Predictor")
-st.write("Start typing and let the model complete the text for you.")
+app = Flask(__name__)
 
 # --------------------------------------------------
-# Load model, tokenizer and max_len
+# Load model, tokenizer, max_len
 # --------------------------------------------------
-@st.cache_resource
-def load_artifacts():
-    with open("model.pkl", "rb") as f:
-        data = pickle.load(f)
+with open("model.pkl", "rb") as f:
+    data = pickle.load(f)
 
-    return data["model"], data["tokenizer"], data["max_len"]
-
-
-model, tokenizer, max_len = load_artifacts()
+model = data["model"]
+tokenizer = data["tokenizer"]
+max_len = data["max_len"]
 
 # --------------------------------------------------
-# User input
+# HTML template (kept simple & human)
 # --------------------------------------------------
-input_text = st.text_input(
-    "Type something:",
-    placeholder="example: i am"
-)
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Next Word Predictor</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+            padding: 40px;
+        }
+        .box {
+            background: white;
+            padding: 30px;
+            max-width: 700px;
+            margin: auto;
+            border-radius: 8px;
+        }
+        textarea, input {
+            width: 100%;
+            padding: 10px;
+            margin-top: 10px;
+        }
+        button {
+            margin-top: 15px;
+            padding: 10px 20px;
+            cursor: pointer;
+        }
+        .result {
+            margin-top: 20px;
+            background: #eef;
+            padding: 15px;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h2>Next Word Prediction</h2>
+        <form method="POST">
+            <label>Enter text:</label>
+            <textarea name="text" rows="4" required>{{ text }}</textarea>
 
-num_words = st.slider(
-    "Number of words to predict",
-    min_value=1,
-    max_value=20,
-    value=10
-)
+            <label>Number of words to predict:</label>
+            <input type="number" name="num_words" value="10" min="1" max="50">
+
+            <button type="submit">Predict</button>
+        </form>
+
+        {% if result %}
+        <div class="result">
+            <strong>Generated Text:</strong>
+            <p>{{ result }}</p>
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>
+"""
 
 # --------------------------------------------------
-# Prediction logic
+# Routes
 # --------------------------------------------------
-if st.button("Predict"):
-    if input_text.strip() == "":
-        st.warning("Please enter some text.")
-    else:
-        generated_text = input_text.strip()
+@app.route("/", methods=["GET", "POST"])
+def index():
+    result = ""
+    text = ""
+
+    if request.method == "POST":
+        text = request.form["text"].strip()
+        num_words = int(request.form["num_words"])
+
+        generated_text = text
 
         for _ in range(num_words):
-            # Convert text to sequence
             sequence = tokenizer.texts_to_sequences([generated_text])[0]
 
             if len(sequence) == 0:
-                st.error("Input contains words not present in the vocabulary.")
                 break
 
-            # Keep only last (max_len - 1) tokens (important)
+            # Keep last max_len-1 tokens
             sequence = sequence[-(max_len - 1):]
 
-            # Pad sequence
-            padded_sequence = pad_sequences(
+            padded = pad_sequences(
                 [sequence],
                 maxlen=max_len - 1,
                 padding="pre"
             )
 
-            # Predict next word
-            prediction = model.predict(padded_sequence, verbose=0)[0]
+            prediction = model.predict(padded, verbose=0)[0]
             next_index = np.argmax(prediction)
 
-            # Map index to word
             next_word = None
-            for word, index in tokenizer.word_index.items():
-                if index == next_index:
+            for word, idx in tokenizer.word_index.items():
+                if idx == next_index:
                     next_word = word
                     break
 
@@ -85,5 +124,16 @@ if st.button("Predict"):
 
             generated_text += " " + next_word
 
-        st.markdown("### ✨ Prediction")
-        st.write(generated_text)
+        result = generated_text
+
+    return render_template_string(
+        HTML_TEMPLATE,
+        result=result,
+        text=text
+    )
+
+# --------------------------------------------------
+# Entry point for gunicorn
+# --------------------------------------------------
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000)
